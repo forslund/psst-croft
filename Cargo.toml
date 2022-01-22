@@ -24,9 +24,15 @@ rand = "0.8"
 raw-window-handle = "0.3"
 regex = "1.5"
 serde = { version = "1.0", features = ["derive", "rc"] }
-serde_json = "1.0"
 souvlaki = "0.5.0"
 time = { version = "0.3", features = ["macros", "formatting"] }
 threadpool = "1.8"
 ureq = { version = "2.1", features = ["json", "socks-proxy"] }
 url = "2.2"
+rustcroft = {git = "https://github.com/forslund/rustcroft", branch = "main"}
+futures-util = "*"
+futures-channel = "*"
+serde_json = "1.0.64"
+tokio = { version = "1.8.0", features = ["full"] }
+tokio-tungstenite = "*"
+

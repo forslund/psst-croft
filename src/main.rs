@@ -1,25 +1,79 @@
 use std::sync::Arc;
-mod webapi;
-mod error;
-mod data;
+use std::collections::HashMap;
 use data::SearchTopic;
-use crate::data::{TrackId, Track};
+use crate::data::TrackId;
 use psst_core::{
     audio::{normalize::NormalizationLevel, output::AudioOutput},
     cache::{Cache, CacheHandle},
     cdn::{Cdn, CdnHandle},
     connection::Credentials,
     error::Error,
-    item_id::{ItemId, ItemIdType},
     player::{item::PlaybackItem, PlaybackConfig, Player, PlayerCommand, PlayerEvent},
     session::{SessionConfig, SessionService},
 };
+use tokio_tungstenite::tungstenite::protocol::Message;
+use futures_channel::mpsc::UnboundedSender;
 use std::{env, io, io::BufRead, path::PathBuf, thread};
-use druid::{im::Vector};
+use serde::{Serialize, Deserialize};
+use serde_json::{Value};
+use rustcroft::MycroftMessage;
+
+mod bus_connection;
+mod error;
+mod data;
+mod webapi;
+
+use data::Album;
 use webapi::WebApi;
+use bus_connection::{start_spotify_service, MsgHandler};
 
 
-fn main() {
+
+
+
+fn search_album(query: &str, api: &WebApi) -> Result<Arc<Album>, error::Error> {
+    let result = api.search(query, &[SearchTopic::Album])?;
+    let best_album = result.albums[0].clone();
+    println!("Best album: {}", best_album.name);
+    Ok(best_album)
+}
+
+
+#[derive(Serialize, Deserialize)]
+pub struct SearchData {
+    pub id: String,
+    pub name: String,
+    pub media_type: String
+}
+
+fn search_handler(message: serde_json::Value,
+                  bus_tx: &UnboundedSender<Message>,
+                  api: &WebApi,
+                  _session: &SessionService) {
+    println!("Searching Spotify");
+    let query = message["data"]["query"].to_string();
+    println!("Query: {}", query);
+
+    let best_album = search_album(query.as_str(), &api).unwrap();
+    let search_result = SearchData{id: best_album.id.to_string(),
+                                   name: best_album.name.to_string(),
+                                   media_type: "album".to_string()};
+    println!("Found {} ({})", search_result.name, search_result.id);
+    let response = MycroftMessage::new("spotify.search.response")
+        .with_data(serde_json::to_value(search_result).unwrap());
+    bus_tx.unbounded_send(response.to_message()).unwrap();
+}
+
+fn play_handler(message: serde_json::Value,
+                _bus: &UnboundedSender<Message>,
+                _api: &WebApi,
+                session: &SessionService) {
+        let query = message["data"]["album"].as_str().unwrap();
+        start_album(Arc::new(query), session.clone()).unwrap();
+}
+
+#[tokio::main]
+async fn main() {
     env_logger::init();
 
     //let args: Vec<String> = env::args().collect();
@@ -34,13 +88,16 @@ fn main() {
     let api = WebApi::new(session.clone(),
                           None,
                           Some(PathBuf::from("/tmp")));
-    let result = api.search("hello nasty", &[SearchTopic::Album]).unwrap();
-    let best_album = result.albums[0].clone();
-    println!("Best album: {}", best_album.name);
-    start_album(best_album.id.clone(), session).unwrap();
+
+
+    let mut handlers = HashMap::<String, MsgHandler>::new();
+    handlers.insert("spotify.search".to_string(), search_handler);
+    handlers.insert("spotify.play".to_string(), play_handler);
+
+	start_spotify_service(handlers, api, session).await;
 }
 
-fn start_album(album_id: Arc<str>, session: SessionService) -> Result<(), Error> {
+fn start_album(album_id: Arc<&str>, session: SessionService) -> Result<(), Error> {
     let cdn = Cdn::new(session.clone(), None)?;
     let cache = Cache::new(PathBuf::from("cache"))?;
     let api = WebApi::new(session.clone(),
@@ -115,6 +172,7 @@ fn play_items(
                             .unwrap();
                     }
                     Ok("s") => {
+                        println!("STOP COMMAND!");
                         player_sender
                             .send(PlayerEvent::Command(PlayerCommand::Stop))
                             .unwrap();
