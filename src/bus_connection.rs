@@ -6,18 +6,21 @@ use futures_channel::mpsc::UnboundedSender;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use serde_json::{Value};
 use futures_util::{future, pin_mut, StreamExt};
+use crossbeam_channel::Sender;
 
 use psst_core::session::SessionService;
+use psst_core::player::{Player, PlayerEvent};
 
 use crate::webapi::WebApi;
 
 pub type MsgHandler = fn(serde_json::Value, &UnboundedSender<Message>,
-                         &WebApi, &SessionService);
+                         &WebApi, &SessionService, &Sender<PlayerEvent>);
 
 pub struct EventHandler {
     handlers: HashMap<String, MsgHandler>,
     api: WebApi,
-    session: SessionService
+    session: SessionService,
+    player_sender: Sender<PlayerEvent>
 }
 
 
@@ -34,7 +37,8 @@ impl EventHandler {
             println!("{}", key);
         }
         match self.handlers.get(name) {
-            Some(handler) => handler(msg, &bus_tx, &self.api, &self.session),
+            Some(handler) => handler(msg, &bus_tx,
+                                     &self.api, &self.session, &self.player_sender),
             None => println!("No handler found for messagetype {}", name)
         }
     }
@@ -53,17 +57,21 @@ impl EventHandler {
     #[allow(dead_code)]
     /// Create a new event handler
     pub fn new(handlers: HashMap<String, MsgHandler>,
-               api: WebApi, session: SessionService) -> EventHandler {
-        EventHandler{ handlers: handlers, api: api, session: session }
+               api: WebApi,
+               session: SessionService,
+               sender: Sender<PlayerEvent>) -> EventHandler {
+        EventHandler{ handlers: handlers,
+                      api: api, session: session, player_sender: sender }
     }
 }
 
 /// Register intents and connect the skill to the message bus
 pub async fn start_spotify_service(handlers: HashMap<String, MsgHandler>,
                                    api: WebApi,
-                                   session: SessionService) {
+                                   session: SessionService,
+                                   sender: Sender<PlayerEvent>) {
     let (bus_tx, bus_rx) = futures_channel::mpsc::unbounded();
-	let bus_handler = EventHandler::new(handlers, api, session);
+	let bus_handler = EventHandler::new(handlers, api, session, sender);
 
     let url = Url::parse("ws://localhost:8181/core").unwrap();
     let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");

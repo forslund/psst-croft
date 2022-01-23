@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::collections::HashMap;
+use crossbeam_channel::Sender;
 use data::SearchTopic;
 use crate::data::TrackId;
 use psst_core::{
@@ -28,9 +29,6 @@ use webapi::WebApi;
 use bus_connection::{start_spotify_service, MsgHandler};
 
 
-
-
-
 fn search_album(query: &str, api: &WebApi) -> Result<Arc<Album>, error::Error> {
     let result = api.search(query, &[SearchTopic::Album])?;
     let best_album = result.albums[0].clone();
@@ -49,7 +47,8 @@ pub struct SearchData {
 fn search_handler(message: serde_json::Value,
                   bus_tx: &UnboundedSender<Message>,
                   api: &WebApi,
-                  _session: &SessionService) {
+                  _session: &SessionService,
+                  _sender: &Sender<PlayerEvent>) {
     println!("Searching Spotify");
     let query = message["data"]["query"].to_string();
     println!("Query: {}", query);
@@ -67,9 +66,10 @@ fn search_handler(message: serde_json::Value,
 fn play_handler(message: serde_json::Value,
                 _bus: &UnboundedSender<Message>,
                 _api: &WebApi,
-                session: &SessionService) {
+                session: &SessionService,
+                sender: &Sender<PlayerEvent>) {
         let query = message["data"]["album"].as_str().unwrap();
-        start_album(Arc::new(query), session.clone()).unwrap();
+        start_album(Arc::new(query), session.clone(), &sender).unwrap();
 }
 
 #[tokio::main]
@@ -94,12 +94,26 @@ async fn main() {
     handlers.insert("spotify.search".to_string(), search_handler);
     handlers.insert("spotify.play".to_string(), play_handler);
 
-	start_spotify_service(handlers, api, session).await;
+    let cdn = Cdn::new(session.clone(), None).unwrap();
+    let cache = Cache::new(PathBuf::from("cache")).unwrap();
+    let config = PlaybackConfig::default();
+    let output = AudioOutput::open().unwrap();
+    let mut player = Player::new(session.clone(), cdn, cache, config, &output);
+    let receiver = player.receiver();
+    let sender = player.sender();
+    let _player_thread = thread::spawn(move ||{
+        for event in receiver {
+            player.handle(event);
+        }
+        
+    });
+	start_spotify_service(handlers, api, session, sender).await;
+    output.sink().close();
 }
 
-fn start_album(album_id: Arc<&str>, session: SessionService) -> Result<(), Error> {
-    let cdn = Cdn::new(session.clone(), None)?;
-    let cache = Cache::new(PathBuf::from("cache"))?;
+fn start_album(album_id: Arc<&str>,
+               session: SessionService,
+               sender: &Sender<PlayerEvent>) -> Result<(), Error> {
     let api = WebApi::new(session.clone(),
                           None,
                           Some(PathBuf::from("/tmp")));
@@ -113,90 +127,17 @@ fn start_album(album_id: Arc<&str>, session: SessionService) -> Result<(), Error
         };
         playlist.push(item);
     }
-    play_items(
-        session,
-        cdn,
-        cache,
-        playlist 
-    )
+    play_items(&sender, playlist)
 }
 
 
-fn start_track(track_id: TrackId, session: SessionService) -> Result<(), Error> {
-    let cdn = Cdn::new(session.clone(), None)?;
-    let cache = Cache::new(PathBuf::from("cache"))?;
-    play_items(
-        session,
-        cdn,
-        cache,
-        vec![PlaybackItem {
-             //item_id,
-             item_id: *track_id,
-             norm_level: NormalizationLevel::Track,
-         }],
-    )
-}
-
-fn play_items(
-    session: SessionService,
-    cdn: CdnHandle,
-    cache: CacheHandle,
-    items: Vec<PlaybackItem>,
-) -> Result<(), Error> {
+fn play_items(sender: &Sender<PlayerEvent>,
+              items: Vec<PlaybackItem>) -> Result<(), Error> {
     let output = AudioOutput::open()?;
-    let config = PlaybackConfig::default();
 
-    let mut player = Player::new(session, cdn, cache, config, &output);
-
-    let _ui_thread = thread::spawn({
-        let player_sender = player.sender();
-
-        player_sender
-            .send(PlayerEvent::Command(PlayerCommand::LoadQueue {
+    sender.send(PlayerEvent::Command(PlayerCommand::LoadQueue {
                 items: items,
                 position: 0,
-            }))
-            .unwrap();
-
-        move || {
-            for line in io::stdin().lock().lines() {
-                match line.as_ref().map(|s| s.as_str()) {
-                    Ok("p") => {
-                        player_sender
-                            .send(PlayerEvent::Command(PlayerCommand::Pause))
-                            .unwrap();
-                    }
-                    Ok("r") => {
-                        player_sender
-                            .send(PlayerEvent::Command(PlayerCommand::Resume))
-                            .unwrap();
-                    }
-                    Ok("s") => {
-                        println!("STOP COMMAND!");
-                        player_sender
-                            .send(PlayerEvent::Command(PlayerCommand::Stop))
-                            .unwrap();
-                    }
-                    Ok("<") => {
-                        player_sender
-                            .send(PlayerEvent::Command(PlayerCommand::Previous))
-                            .unwrap();
-                    }
-                    Ok(">") => {
-                        player_sender
-                            .send(PlayerEvent::Command(PlayerCommand::Next))
-                            .unwrap();
-                    }
-                    _ => log::warn!("unknown command"),
-                }
-            }
-        }
-    });
-
-    for event in player.receiver() {
-        player.handle(event);
-    }
-    output.sink().close();
-
+                })).unwrap();
     Ok(())
 }
