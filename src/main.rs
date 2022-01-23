@@ -72,6 +72,39 @@ fn play_handler(message: serde_json::Value,
         start_album(Arc::new(query), session.clone(), &sender).unwrap();
 }
 
+fn prev_track_handler(message: serde_json::Value,
+                      _bus: &UnboundedSender<Message>,
+                      _api: &WebApi,
+                      session: &SessionService,
+                      sender: &Sender<PlayerEvent>) {
+    sender.send(PlayerEvent::Command(PlayerCommand::Previous)).unwrap();
+}
+
+fn next_track_handler(message: serde_json::Value,
+                      _bus: &UnboundedSender<Message>,
+                      _api: &WebApi,
+                      session: &SessionService,
+                      sender: &Sender<PlayerEvent>) {
+    sender.send(PlayerEvent::Command(PlayerCommand::Next)).unwrap();
+}
+
+fn pause_handler(message: serde_json::Value,
+                 _bus: &UnboundedSender<Message>,
+                 _api: &WebApi,
+                 _session: &SessionService,
+                 sender: &Sender<PlayerEvent>) {
+    sender.send(PlayerEvent::Command(PlayerCommand::Pause)).unwrap();
+}
+
+fn resume_handler(message: serde_json::Value,
+                  _bus: &UnboundedSender<Message>,
+                  _api: &WebApi,
+                  i_session: &SessionService,
+                  sender: &Sender<PlayerEvent>) {
+    sender.send(PlayerEvent::Command(PlayerCommand::Resume)).unwrap();
+}
+
+
 #[tokio::main]
 async fn main() {
     env_logger::init();
@@ -89,10 +122,13 @@ async fn main() {
                           None,
                           Some(PathBuf::from("/tmp")));
 
-
     let mut handlers = HashMap::<String, MsgHandler>::new();
     handlers.insert("spotify.search".to_string(), search_handler);
     handlers.insert("spotify.play".to_string(), play_handler);
+    handlers.insert("spotify.next".to_string(), next_track_handler);
+    handlers.insert("spotify.prev".to_string(), prev_track_handler);
+    handlers.insert("spotify.pause".to_string(), pause_handler);
+    handlers.insert("spotify.resume".to_string(), resume_handler);
 
     let cdn = Cdn::new(session.clone(), None).unwrap();
     let cache = Cache::new(PathBuf::from("cache")).unwrap();
